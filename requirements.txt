@@ -1,0 +1,7 @@
+ib_insync
+pandas
+numpy
+pyyaml
+yfinance
+python-telegram-bot
+ta

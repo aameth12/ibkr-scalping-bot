@@ -1,0 +1,41 @@
+watchlist:
+  - AAPL
+  - MSFT
+  - GOOGL
+  - AMZN
+  - TSLA
+  - NVDA
+  - META
+  - AMD
+  - SPY
+  - QQQ
+  - SMCI
+  - INTC
+  - T
+  - SOFI
+  - BAC
+  - NFLX
+  - F
+  - AAL
+  - NVO
+  - DELL
+ibkr_connection:
+  host: 127.0.0.1
+  port: 7497
+  client_id: 1
+strategy_params:
+  ema_fast: 9
+  ema_slow: 21
+  rsi_period: 14
+  rsi_overbought: 70
+  rsi_oversold: 30
+  volume_spike_multiplier: 1.5
+risk_params:
+  risk_per_trade: 0.05
+  max_daily_loss: 0.10
+  stop_loss_pct: 0.02
+  take_profit_pct: 0.04
+telegram_settings:
+  bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+  chat_id: "YOUR_TELEGRAM_CHAT_ID"
+mode: paper
