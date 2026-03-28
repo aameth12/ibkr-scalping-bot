@@ -3,15 +3,22 @@ import telegram
 from telegram import Update, ForceReply
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 import asyncio
+import datetime
+import os
 
 from src.utils import setup_logger
 
 class TelegramBot:
-    def __init__(self, config, ibkr_bot_instance=None):
+    def __init__(self, config, ibkr_bot_instance=None, analytics_instance=None, scanner_instance=None, risk_manager_instance=None, journal_instance=None):
         self.logger = setup_logger("TelegramBot", "telegram_bot.log")
         self.bot_token = config["telegram_settings"]["bot_token"]
         self.chat_id = config["telegram_settings"]["chat_id"]
+        self.watchlist = config["watchlist"]
         self.ibkr_bot = ibkr_bot_instance
+        self.analytics = analytics_instance
+        self.scanner = scanner_instance
+        self.risk_manager = risk_manager_instance
+        self.journal = journal_instance
         self.application = Application.builder().token(self.bot_token).build()
 
         # Register handlers
@@ -21,8 +28,11 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("status", self.status_command))
         self.application.add_handler(CommandHandler("positions", self.positions_command))
         self.application.add_handler(CommandHandler("pnl", self.pnl_command))
-        self.application.add_handler(CommandHandler("stop_bot", self.stop_bot_command))
-        self.application.add_handler(CommandHandler("start_bot", self.start_bot_command))
+        self.application.add_handler(CommandHandler("pause", self.pause_bot_command))
+        self.application.add_handler(CommandHandler("resume", self.resume_bot_command))
+        self.application.add_handler(CommandHandler("watchlist", self.watchlist_command))
+        self.application.add_handler(CommandHandler("setparam", self.setparam_command))
+        self.application.add_handler(CommandHandler("journal", self.journal_command))
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user = update.effective_user
@@ -37,9 +47,12 @@ class TelegramBot:
             "/dashboard - Show bot dashboard with account summary and open positions\n"
             "/status - Get current bot status\n"
             "/positions - List all open positions\n"
-            "/pnl - Show today's and total P&L\n"
-            "/start_bot - Start the trading bot (if stopped)\n"
-            "/stop_bot - Stop the trading bot\n"
+            "/pnl - Show today\"s and total P&L\n"
+            "/pause - Pause the trading bot\n"
+            "/resume - Resume the trading bot\n"
+            "/watchlist - View current watchlist\n"
+            "/setparam <param_name> <value> - Change a bot parameter (e.g., /setparam risk_per_trade 0.03)\n"
+            "/journal - Get the latest trade journal entries\n"
             "/help - Show this help message"
         )
         await update.message.reply_text(help_text)
@@ -60,10 +73,11 @@ class TelegramBot:
         
         status = self.ibkr_bot.get_status()
         status_text = (
-            f"Market: {status['market_status']}\n"
-            f"Mode: {status['mode']} | Engine: {status['engine_status']}\n"
-            f"Account Balance: ${status['account_balance']:.2f}\n"
-            f"Total P&L (All Time): ${status['total_pnl']:.2f}"
+            f"Market: {status["market_status"]}\n"
+            f"Mode: {status["mode"]} | Engine: {status["engine_status"]}\n"
+            f"Account Balance: ${status["account_balance"]:.2f}\n"
+            f"Total P&L (All Time): ${status["total_pnl"]:.2f}\n"
+            f"Bot Paused: {self.risk_manager.bot_paused if self.risk_manager else False}"
         )
         await update.message.reply_text(status_text)
 
@@ -80,8 +94,8 @@ class TelegramBot:
         positions_text = "Open Positions:\n"
         for symbol, data in positions.items():
             positions_text += (
-                f"  {data['contract'].secType} {symbol} x{data['position']} @ ${data['average_cost']:.2f}\n"
-                f"    Now: ${data['market_price']:.2f} | P&L: ${(data['market_price'] - data['average_cost']) * data['position']:.2f} ({(data['market_price'] / data['average_cost'] - 1) * 100:.2f}%)\n"
+                f"  {data["contract"].secType} {symbol} x{data["position"]} @ ${data["average_cost"]:.2f}\n"
+                f"    Now: ${data["market_price"]:.2f} | P&L: ${(data["market_price"] - data["average_cost"]) * data["position"]:.2f} ({(data["market_price"] / data["average_cost"] - 1) * 100:.2f}%)\n"
             )
         await update.message.reply_text(positions_text)
 
@@ -92,121 +106,155 @@ class TelegramBot:
         
         pnl_summary = self.ibkr_bot.get_pnl_summary()
         pnl_text = (
-            f"Today's P&L: ${pnl_summary['daily_pnl']:.2f}\n"
-            f"Total P&L (All Time): ${pnl_summary['total_pnl']:.2f}"
+            f"Today\"s P&L: ${pnl_summary["daily_pnl"]:.2f}\n"
+            f"Total P&L (All Time): ${pnl_summary["total_pnl"]:.2f}"
         )
         await update.message.reply_text(pnl_text)
 
-    async def stop_bot_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self.ibkr_bot:
-            await update.message.reply_text("IBKR bot not initialized.")
+    async def pause_bot_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self.risk_manager:
+            await update.message.reply_text("Risk Manager not initialized.")
             return
-        await update.message.reply_text("Stopping the trading bot...")
-        self.ibkr_bot.stop_bot()
-        await update.message.reply_text("Trading bot stopped.")
+        self.risk_manager.pause_bot()
+        await update.message.reply_text("Trading bot paused.")
 
-    async def start_bot_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self.ibkr_bot:
-            await update.message.reply_text("IBKR bot not initialized.")
+    async def resume_bot_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self.risk_manager:
+            await update.message.reply_text("Risk Manager not initialized.")
             return
-        await update.message.reply_text("Starting the trading bot...")
-        asyncio.create_task(self.ibkr_bot.start_bot()) # Run in background
-        await update.message.reply_text("Trading bot started.")
+        self.risk_manager.resume_bot()
+        await update.message.reply_text("Trading bot resumed.")
 
-    def _format_dashboard_message(self, status):
-        market_status_emoji = "🟢 OPEN" if status["market_status"] == "OPEN" else "🔴 CLOSED"
-        engine_status_emoji = "▶ RUNNING" if status["engine_status"] == "RUNNING" else "■ STOPPED"
+    async def watchlist_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self.watchlist:
+            await update.message.reply_text("Watchlist is empty.")
+            return
+        watchlist_text = "Current Watchlist:\n" + ", ".join(self.watchlist)
+        await update.message.reply_text(watchlist_text)
 
-        dashboard_text = f"""
-==============================
-Market: {market_status_emoji}
-Mode: {status['mode']} | Engine: {engine_status_emoji}
-Account:
-  Balance: ${status['account_balance']:.2f}
-  Total P&L: ${status['total_pnl']:.2f}
-Today
-------------------------------
-Trades: {status['today_trades']} | Wins: {status['today_wins']} | P&L: ${status['today_pnl']:.2f}
-All-Time (Bot Tracked)
-------------------------------
-Total Trades: {status['all_time_trades']} | Win Rate: {status['all_time_win_rate']:.2f}%
-Total P&L: ${status['total_pnl']:.2f}
-Profit Factor: {status['all_time_profit_factor']:.2f}
-Open Positions ({len(status['open_positions'])})
-------------------------------
-"""
-        if status["open_positions"]:
-            for symbol, data in status["open_positions"].items():
-                unrealized_pnl = (data['market_price'] - data['average_cost']) * data['position']
-                unrealized_pct = (data['market_price'] / data['average_cost'] - 1) * 100
-                dashboard_text += (
-                    f"  {'LONG' if data['position'] > 0 else 'SHORT'} {symbol} x{abs(data['position'])} @ ${data['average_cost']:.2f}\n"
-                    f"    Now: ${data['market_price']:.2f} | P&L: ${unrealized_pnl:.2f} ({unrealized_pct:.2f}%)\n"
-                )
-            total_unrealized = sum([(p['market_price'] - p['average_cost']) * p['position'] for p in status['open_positions'].values()])
-            dashboard_text += f"  Total Unrealized: ${total_unrealized:.2f}"
-        else:
-            dashboard_text += "  No open positions."
-
-        return dashboard_text
-
-    async def send_new_position_notification(self, trade, risk_manager):
-        contract = trade.contract
-        order = trade.order
-        action = order.action
-        quantity = order.totalQuantity
-        entry_price = trade.orderStatus.avgFillPrice
-
-        stop_loss_price, take_profit_price = risk_manager.calculate_stop_loss_take_profit(entry_price, "long" if action == "BUY" else "short")
+    async def setparam_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        args = context.args
+        if len(args) != 2:
+            await update.message.reply_text("Usage: /setparam <param_name> <value>")
+            return
         
-        # Calculate risk amount
-        risk_amount = abs(entry_price - stop_loss_price) * quantity
-        risk_pct = (risk_amount / (entry_price * quantity)) * 100
+        param_name = args[0]
+        param_value = args[1]
 
-        # Calculate R:R
-        reward = abs(take_profit_price - entry_price) * quantity
-        if risk_amount > 0:
-            rr_ratio = reward / risk_amount
-        else:
-            rr_ratio = 0 # Avoid division by zero
+        # This is a simplified example. A robust implementation would need to
+        # dynamically update the config object and potentially re-initialize modules.
+        # For now, let\"s assume direct access to risk_manager parameters.
+        try:
+            if hasattr(self.risk_manager, param_name):
+                # Attempt to convert value to appropriate type
+                if param_name in ["risk_per_trade", "max_daily_loss_pct", "min_rr_ratio", "partial_profit_target_rr", "atr_multiplier_stop_loss", "trailing_stop_atr_multiplier", "trailing_stop_pct"]:
+                    setattr(self.risk_manager, param_name, float(param_value))
+                elif param_name in ["circuit_breaker_consecutive_losses"]:
+                    setattr(self.risk_manager, param_name, int(param_value))
+                else:
+                    setattr(self.risk_manager, param_name, param_value)
+                await update.message.reply_text(f"Parameter {param_name} set to {param_value}")
+            else:
+                await update.message.reply_text(f"Parameter {param_name} not found or not settable.")
+        except ValueError:
+            await update.message.reply_text(f"Invalid value for {param_name}. Please check the type.")
+        except Exception as e:
+            await update.message.reply_text(f"Error setting parameter: {e}")
 
+    async def journal_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self.journal:
+            await update.message.reply_text("Trade journal not initialized.")
+            return
+        
+        journal_df = self.journal.get_journal()
+        if journal_df.empty:
+            await update.message.reply_text("Trade journal is empty.")
+            return
+        
+        # Send last 5 trades as a summary
+        last_trades = journal_df.tail(5)[["timestamp", "symbol", "direction", "pnl", "rr_achieved", "exit_reason"]]
+        journal_text = "*Latest Trade Journal Entries:*\n" + last_trades.to_markdown(index=False)
+        await update.message.reply_text(journal_text, parse_mode="Markdown")
+
+    async def send_new_position_notification(self, trade_info):
+        # trade_info should contain all necessary details including R:R
         message = f"""
 🟢 NEW POSITION
-{contract.symbol} {action} x{quantity} @ ${entry_price:.2f}
-Stop:   ${stop_loss_price:.2f} ({risk_manager.stop_loss_pct*100:.2f}%)
-Target: ${take_profit_price:.2f} ({risk_manager.take_profit_pct*100:.2f}%)
-R:R {rr_ratio:.2f}:1 | Risk: ${risk_amount:.2f} ({risk_pct:.2f}%)
+{trade_info["symbol"]} {trade_info["action"]} x{trade_info["quantity"]} @ ${trade_info["entry_price"]:.2f}
+Stop:   ${trade_info["stop_loss_price"]:.2f}
+Target: ${trade_info["target_price"]:.2f}
+Partial Target: ${trade_info["partial_profit_price"]:.2f}
+Calculated R:R {trade_info["rr_ratio"]:.2f}:1
 """
         await self.send_message(message)
 
-    async def send_position_closed_notification(self, trade, pnl, close_price, open_price):
-        contract = trade.contract
-        order = trade.order
-        quantity = order.totalQuantity
-        
-        # Determine if it was stopped out or target hit (simplified, actual logic would be more complex)
-        close_reason = "" # Placeholder
-        if pnl < 0: close_reason = "Stopped out 🛑"
-        elif pnl > 0: close_reason = "Target hit 🎯"
-        else: close_reason = "Manual close ✋"
+    async def send_position_closed_notification(self, trade_info):
+        # trade_info should contain all necessary details including PnL, R:R, and exit reason
+        close_reason_emoji = {
+            "Stopped out": "🛑",
+            "Target hit": "🎯",
+            "Trailing stop": "📈",
+            "Partial profit": "💰",
+            "Manual close": "✋",
+            "Circuit breaker": "⚡",
+            "Unknown": "❓"
+        }.get(trade_info["exit_reason"], "❓")
 
         message = f"""
 🔴 POSITION CLOSED
-{contract.symbol} {'LONG' if order.action == 'SELL' else 'SHORT'} x{quantity}
-Opened: ${open_price:.2f} → Closed: ${close_price:.2f}
-P&L: ${pnl:.2f} ({(pnl / (open_price * quantity)) * 100:.2f}%)
-{close_reason}
+{trade_info["symbol"]} {trade_info["direction"]} x{trade_info["quantity"]}
+Opened: ${trade_info["entry_price"]:.2f} → Closed: ${trade_info["exit_price"]:.2f}
+P&L: ${trade_info["pnl"]:.2f} ({trade_info["pnl_pct"]:.2f}%)
+Achieved R:R: {trade_info["rr_achieved"]:.2f}:1
+{trade_info["exit_reason"]} {close_reason_emoji}
 """
         await self.send_message(message)
 
-    async def send_message(self, text):
+    async def send_circuit_breaker_alert(self, reason):
+        message = f"⚡ CIRCUIT BREAKER TRIGGERED! ⚡\nReason: {reason}\nBot paused until next trading day."
+        await self.send_message(message)
+
+    async def send_morning_briefing(self):
+        if not self.scanner:
+            self.logger.warning("Scanner not initialized for morning briefing.")
+            return
+        movers = self.scanner.scan_pre_market()
+        briefing_text = self.scanner.generate_morning_briefing(movers)
+        await self.send_message(briefing_text, parse_mode="Markdown")
+
+    async def send_daily_performance_summary(self):
+        if not self.analytics or not self.journal:
+            self.logger.warning("Analytics or Journal not initialized for daily summary.")
+            return
+        
+        trade_log_df = self.journal.get_journal()
+        current_date = datetime.datetime.now()
+        summary_text = self.analytics.generate_daily_summary(trade_log_df, current_date)
+        await self.send_message(summary_text, parse_mode="Markdown")
+
+        # Generate and send equity curve chart
+        equity_chart_path = os.path.join("data", "equity_curve.png")
+        if self.analytics.generate_equity_curve_chart(equity_chart_path):
+            await self.send_photo(equity_chart_path, caption="Daily Equity Curve")
+
+    async def send_message(self, text, parse_mode=None):
         if self.chat_id:
             try:
-                await self.application.bot.send_message(chat_id=self.chat_id, text=text)
+                await self.application.bot.send_message(chat_id=self.chat_id, text=text, parse_mode=parse_mode)
             except telegram.error.TelegramError as e:
                 self.logger.error(f"Error sending Telegram message: {e}")
         else:
             self.logger.warning("Telegram chat_id not set. Cannot send messages.")
+
+    async def send_photo(self, photo_path, caption=None):
+        if self.chat_id and os.path.exists(photo_path):
+            try:
+                with open(photo_path, "rb") as photo_file:
+                    await self.application.bot.send_photo(chat_id=self.chat_id, photo=photo_file, caption=caption)
+            except telegram.error.TelegramError as e:
+                self.logger.error(f"Error sending Telegram photo: {e}")
+        else:
+            self.logger.warning(f"Telegram chat_id not set or photo not found: {photo_path}. Cannot send photo.")
 
     async def run(self):
         self.logger.info("Telegram bot started polling...")
@@ -216,26 +264,36 @@ P&L: ${pnl:.2f} ({(pnl / (open_price * quantity)) * 100:.2f}%)
 if __name__ == "__main__":
     # Example usage (for testing purposes)
     import yaml
+    from src.risk_manager import RiskManager
+    from src.scanner import PreMarketScanner
+    from src.analytics import Analytics
+    from src.journal import TradeJournal
+
+    # Create data directory if it doesn't exist
+    os.makedirs("data", exist_ok=True)
+
     with open("../../config.yaml", "r") as f:
         config = yaml.safe_load(f)
     
     # Mock IBKR bot for testing Telegram features
     class MockIBKRBot:
-        def __init__(self):
-            self.account_balance = 1000.0
-            self.total_pnl = 50.0
-            self.daily_pnl = 10.0
+        def __init__(self, config):
+            self.account_balance = 10000.0
+            self.total_pnl = 500.0
+            self.daily_pnl = 100.0
             self.total_trades = 10
             self.total_wins = 7
             self.mode = "paper"
             self.positions = {
                 "AAPL": {
-                    "contract": type('obj', (object,), {'symbol': 'AAPL', 'secType': 'STK'})(),
+                    "contract": type("obj", (object,), {"symbol": "AAPL", "secType": "STK"})(),
                     "position": 10,
                     "market_price": 170.0,
                     "average_cost": 165.0
                 }
             }
+            self.journal = TradeJournal(config)
+
         def get_status(self):
             return {
                 "market_status": "OPEN",
@@ -259,6 +317,11 @@ if __name__ == "__main__":
         def stop_bot(self): print("Mock IBKR Bot Stopped")
         async def start_bot(self): print("Mock IBKR Bot Started")
 
-    mock_ibkr_bot = MockIBKRBot()
-    telegram_bot = TelegramBot(config, mock_ibkr_bot)
+    mock_ibkr_bot = MockIBKRBot(config)
+    risk_manager = RiskManager(config)
+    scanner = PreMarketScanner(config)
+    analytics = Analytics(config)
+    journal = TradeJournal(config)
+
+    telegram_bot = TelegramBot(config, mock_ibkr_bot, analytics, scanner, risk_manager, journal)
     asyncio.run(telegram_bot.run())

@@ -1,5 +1,6 @@
 import asyncio
 import yaml
+import os
 from src.bot import IBKRBot
 from src.telegram_bot import TelegramBot
 from src.utils import setup_logger
@@ -7,6 +8,9 @@ from src.utils import setup_logger
 async def main():
     logger = setup_logger("Main", "main.log")
     logger.info("Starting the IBKR Scalping Bot application...")
+
+    # Create data directory if it doesn't exist
+    os.makedirs("data", exist_ok=True)
 
     try:
         with open("config.yaml", "r") as f:
@@ -16,10 +20,13 @@ async def main():
         return
 
     ibkr_bot = IBKRBot(config_path="config.yaml")
-    telegram_bot = TelegramBot(config, ibkr_bot)
-    ibkr_bot.set_telegram_bot(telegram_bot)
+    
+    # The IBKRBot constructor now initializes all its sub-modules internally.
+    # We just need to ensure the TelegramBot gets the correct references.
+    # The TelegramBot is already initialized within IBKRBot, so we can access it directly.
+    telegram_bot = ibkr_bot.telegram_bot
 
-    # Start Telegram bot in a separate task
+    # Start Telegram bot polling in a separate task
     telegram_task = asyncio.create_task(telegram_bot.run())
 
     # Start IBKR bot

@@ -30,11 +30,47 @@ strategy_params:
   rsi_overbought: 70
   rsi_oversold: 30
   volume_spike_multiplier: 1.5
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  bb_window: 20
+  bb_std: 2
+  atr_window: 14
+  stoch_k_period: 14
+  stoch_d_period: 3
+  stoch_smooth_period: 3
+multi_timeframe_params:
+  timeframes:
+    - 5min
+    - 15min
+    - 1h
+  sr_window: 10
+  sr_tolerance_factor: 0.5
 risk_params:
   risk_per_trade: 0.05
-  max_daily_loss: 0.10
-  stop_loss_pct: 0.02
-  take_profit_pct: 0.04
+  max_daily_loss_pct: 0.10
+  min_rr_ratio: 2.0
+  partial_profit_target_rr: 2.0
+  circuit_breaker_consecutive_losses: 3
+  atr_multiplier_stop_loss: 2.0
+  trailing_stop_atr_multiplier: 1.0
+  trailing_stop_pct: 0.005
+filter_params:
+  max_correlated_positions: 2
+  earnings_avoid_days: 1
+scanner_params:
+  pre_market_hours: "04:00-09:30"
+  min_pre_market_volume: 100000
+  min_gap_percentage: 2.0
+analytics_params:
+  trade_log_path: "data/trade_journal.csv"
+  equity_curve_path: "data/equity_curve.csv"
+  initial_capital: 10000.0
+journal_params:
+  journal_file: "data/trade_journal.csv"
+ml_optimizer_params:
+  min_trades_for_optimization: 20
+  signal_confidence_threshold: 0.6
 telegram_settings:
   bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
   chat_id: "YOUR_TELEGRAM_CHAT_ID"

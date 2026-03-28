@@ -5,3 +5,5 @@ pyyaml
 yfinance
 python-telegram-bot
 ta
+matplotlib
+scipy
